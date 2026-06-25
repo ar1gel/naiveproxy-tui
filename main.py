@@ -829,7 +829,7 @@ class NaiveTUI:
                 h.addstr(y, 2, f" {prefix} {label}: ", clr)
                 h.addstr(f"{display}", cp("input"))
             h.attron(cpf("dim"))
-            h.addstr(self.height - 4, 2, " ↑↓/Tab navigate  Enter=edit  s=save  d=defaults  q=dashboard")
+            h.addstr(self.height - 4, 2, " ↑↓/Tab fields  Enter=edit  Tab→next screen  s=save  d=defaults  q=back")
             h.attroff(cpf("dim"))
             h.refresh()
             self._draw_status_bar()
@@ -838,9 +838,13 @@ class NaiveTUI:
             key = h.getch()
             if key in (curses.KEY_UP, ord('k')): idx = max(0, idx - 1); offset = min(offset, idx)
             elif key in (curses.KEY_DOWN, ord('j')): idx = min(len(fields) - 1, idx + 1); offset = max(0, idx - max_visible + 1)
-            elif key in (9,):  # Tab → next field
+            elif key in (9,):  # Tab → next field, or next screen at end
+                if idx >= len(fields) - 1:
+                    return self._nav_right()
                 idx = min(len(fields) - 1, idx + 1); offset = max(0, idx - max_visible + 1)
-            elif key in (curses.KEY_BTAB, 353):  # Shift+Tab → prev field
+            elif key in (curses.KEY_BTAB, 353):  # Shift+Tab → prev field, or prev screen at start
+                if idx <= 0:
+                    return self._nav_left()
                 idx = max(0, idx - 1); offset = min(offset, idx)
             elif key in (10, 13, ord(' ')):
                 k, lbl, val = fields[idx]
@@ -1068,7 +1072,7 @@ class NaiveTUI:
 
             h.attron(cpf("dim"))
             try:
-                h.addstr(self.height - 4, 2, " ↑↓/Tab navigate  Enter=edit  d=deploy  s=save  q=dashboard")
+                h.addstr(self.height - 4, 2, " ↑↓/Tab fields  Enter=edit  Tab→next screen  d=deploy  s=save  q=back")
             except curses.error:
                 pass
             h.attroff(cpf("dim"))
@@ -1083,9 +1087,13 @@ class NaiveTUI:
             elif key == curses.KEY_DOWN:
                 idx = min(len(fields) - 1, idx + 1)
                 offset = max(0, idx - max_visible + 1)
-            elif key in (9,):  # Tab → next field
+            elif key in (9,):  # Tab → next field, or next screen at end
+                if idx >= len(fields) - 1:
+                    return self._nav_right()
                 idx = min(len(fields) - 1, idx + 1); offset = max(0, idx - max_visible + 1)
-            elif key in (curses.KEY_BTAB, 353):
+            elif key in (curses.KEY_BTAB, 353):  # Shift+Tab → prev field, or prev screen at start
+                if idx <= 0:
+                    return self._nav_left()
                 idx = max(0, idx - 1); offset = min(offset, idx)
             elif key in (10, 13, ord(' ')):
                 k, lbl, val = fields[idx]
