@@ -1,0 +1,15 @@
+[Unit]
+Description=NaiveProxy Client (managed by naiveproxy-tui)
+Documentation=https://github.com/klzgrad/naiveproxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/naive --config=%h/.config/naiveproxy/config.json
+Restart=on-failure
+RestartSec=5
+Nice=10
+
+[Install]
+WantedBy=default.target
