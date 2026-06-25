@@ -147,8 +147,7 @@ class NaiveController:
     def start(self) -> str:
         if self.running:
             return "already_running"
-        naive = NAIVE_BIN
-        if not naive.exists():
+        if not NAIVE_BIN.exists():
             return "no_binary"
         cmd = [str(naive)] + self.cfg.to_cmd_args()
         try:
@@ -209,6 +208,127 @@ class NaiveController:
             except queue.Empty:
                 break
         return lines
+
+
+# ── Naive Binary Downloader ──────────────────────────────────────
+
+class NaiveDownloader:
+    API = "https://api.github.com/repos/klzgrad/naiveproxy/releases/latest"
+
+    ARCH_MAP = {
+        ("linux", "x86_64"):   "linux-x64",
+        ("linux", "amd64"):    "linux-x64",
+        ("linux", "i686"):     "linux-x86",
+        ("linux", "i386"):     "linux-x86",
+        ("linux", "aarch64"):  "linux-arm64",
+        ("linux", "armv8l"):   "linux-arm64",
+        ("linux", "armv7l"):   "linux-arm",
+        ("linux", "arm"):      "linux-arm",
+        ("linux", "riscv64"):  "linux-riscv64",
+        ("linux", "loongarch64"): "linux-loong64",
+        ("linux", "mips64el"): "linux-mips64el",
+        ("linux", "mipsel"):   "linux-mipsel",
+        ("darwin", "x86_64"):  "mac-x64-x64",
+        ("darwin", "amd64"):   "mac-x64-x64",
+        ("darwin", "aarch64"): "mac-arm64-arm64",
+        ("darwin", "arm64"):   "mac-arm64-arm64",
+    }
+
+    def __init__(self):
+        self.status: list[str] = []
+        self.done = False
+        self.success = False
+        self.error = ""
+        self._thread: Optional[threading.Thread] = None
+
+    def _detect_asset(self) -> str | None:
+        import platform
+        sys_name = platform.system().lower()
+        machine = platform.machine().lower()
+        key = (sys_name, machine)
+        suffix = self.ARCH_MAP.get(key)
+        if not suffix:
+            # try without version
+            for (os_name, arch), val in self.ARCH_MAP.items():
+                if os_name == sys_name and arch in machine:
+                    suffix = val
+                    break
+        if not suffix:
+            self.error = f"Unsupported platform: {sys_name}/{machine}"
+            return None
+        return suffix
+
+    def download(self, target_path: Path):
+        import platform
+        import urllib.request
+        import tarfile
+        import io
+
+        self.done = False
+        self.success = False
+        self.status.clear()
+
+        asset_suffix = self._detect_asset()
+        if not asset_suffix:
+            self.done = True
+            return
+
+        def _run():
+            try:
+                self.status.append(f"[*] Detecting latest release ...")
+                req = urllib.request.Request(self.API,
+                    headers={"User-Agent": "naiveproxy-tui/1.0", "Accept": "application/json"})
+                resp = urllib.request.urlopen(req, timeout=15)
+                rel = json.loads(resp.read().decode())
+                tag = rel["tag_name"]
+                version = tag.lstrip("v")
+
+                # find asset
+                asset_name = f"naiveproxy-{tag}-{asset_suffix}.tar.xz"
+                dl_url = None
+                for a in rel.get("assets", []):
+                    if a["name"] == asset_name:
+                        dl_url = a["browser_download_url"]
+                        break
+                if not dl_url:
+                    self.error = f"Asset not found: {asset_name}"
+                    self.done = True
+                    self.success = False
+                    return
+
+                self.status.append(f"[*] Downloading {tag} ({asset_suffix}) ...")
+                dl_req = urllib.request.Request(dl_url,
+                    headers={"User-Agent": "naiveproxy-tui/1.0"})
+                dl_resp = urllib.request.urlopen(dl_req, timeout=60)
+                data = dl_resp.read()
+                self.status.append(f"[*] Downloaded {len(data)//1024} KB, extracting ...")
+
+                # tar.xz -> naive binary
+                with tarfile.open(fileobj=io.BytesIO(data), mode="r:xz") as tar:
+                    # The archive root is a directory named "naiveproxy-v{version}-{suffix}/"
+                    root_dir = f"naiveproxy-{tag}-{asset_suffix}"
+                    member = tar.getmember(f"{root_dir}/naive")
+                    with tar.extractfile(member) as f:
+                        binary_data = f.read()
+
+                target_path.write_bytes(binary_data)
+                target_path.chmod(0o755)
+
+                self.success = True
+                self.status.append(f"[+] Naive {tag} installed at {target_path}")
+                self.done = True
+
+            except Exception as e:
+                self.error = str(e)
+                self.status.append(f"[!] Download failed: {e}")
+                self.done = True
+                self.success = False
+
+        self._thread = threading.Thread(target=_run, daemon=True)
+        self._thread.start()
+
+    def poll_status(self) -> list[str]:
+        return list(self.status)
 
 
 # ── VPS Deployer ──────────────────────────────────────────────────
@@ -376,6 +496,7 @@ class NaiveTUI:
         self.cfg.load()
         self.ctl = NaiveController(self.cfg)
         self.deployer = VPSDeployer()
+        self.downloader = NaiveDownloader()
         self.height, self.width = stdscr.getmaxyx()
         self.log_buffer: list[str] = []
         self.log_pad_pos = 0
@@ -538,6 +659,43 @@ class NaiveTUI:
                 else:
                     return str(sel)
 
+    def binary_download_screen(self):
+        h = self.stdscr
+        if self.downloader.done:
+            self.downloader = NaiveDownloader()
+        self.downloader.download(NAIVE_BIN)
+        spinner = "|/-\\"
+        sp_idx = 0
+        last_status_len = 0
+        while not self.downloader.done:
+            self._draw_header("Download Naive Binary")
+            self._clear_content()
+            lines = self.downloader.poll_status()
+            for i, line in enumerate(lines[-8:]):
+                clr = cpf("ok") if line.startswith("[+]") else cpf("err") if line.startswith("[!]") else cp("input")
+                h.addstr(2 + i, 4, f" {spinner[sp_idx % 4]} {line[:self.width-10]}", clr)
+            sp_idx += 1
+            h.refresh()
+            self._draw_status_bar()
+            self._draw_menu_bar()
+            time.sleep(0.12)
+        # Show final result
+        self._draw_header("Download Naive Binary")
+        self._clear_content()
+        lines = self.downloader.poll_status()
+        for i, line in enumerate(lines):
+            clr = cpf("ok") if line.startswith("[+]") else cpf("err") if line.startswith("[!]") else cp("input")
+            h.addstr(2 + i, 4, f"  {line[:self.width-10]}", clr)
+        if self.downloader.success:
+            h.addstr(2 + len(lines) + 1, 4, " Binary installed! Press any key to continue.", cpf("ok") | curses.A_BOLD)
+        else:
+            h.addstr(2 + len(lines) + 1, 4, f" Failed: {self.downloader.error or 'unknown'}", cpf("err") | curses.A_BOLD)
+            h.addstr(2 + len(lines) + 2, 4, " Download manually from: https://github.com/klzgrad/naiveproxy/releases", cpf("dim"))
+        h.refresh()
+        h.getch()
+        self.downloader = NaiveDownloader()
+        return self.dashboard()
+
     # ── Screens ──
 
     def dashboard(self):
@@ -553,7 +711,11 @@ class NaiveTUI:
         pid_txt = str(self.ctl.pid) if self.ctl.pid else "-"
         h.addstr(5, 4, f"PID:     {pid_txt}")
         h.addstr(6, 4, f"Config:  {self.cfg.path.resolve()}")
-        h.addstr(7, 4, f"Binary:  {NAIVE_BIN.resolve() if NAIVE_BIN.exists() else 'NOT FOUND'}")
+        binary_ok = NAIVE_BIN.exists()
+        bin_clr = cpf("ok") if binary_ok else cpf("err")
+        bin_txt = str(NAIVE_BIN.resolve()) if binary_ok else "NOT FOUND"
+        h.addstr(7, 4, f"Binary:  ", cp("input"))
+        h.addstr(bin_txt, bin_clr | curses.A_BOLD)
 
         h.attron(cpf("title"))
         h.addstr(9, 4, f" Current Config  ")
@@ -571,10 +733,15 @@ class NaiveTUI:
             ("[3] Restart Client", "restart"),
             ("[4] Open Config Editor", "config"),
             ("[5] View Logs", "logs"),
-            ("[6] Deploy to VPS", "vps"),
         ]
+        if not binary_ok:
+            actions.append(("[7] Download Naive Binary", "download"))
+        else:
+            actions.append(("[6] Deploy to VPS", "vps"))
         for label, action in actions:
-            h.addstr(y, 6, label, cpf("ok") if "Start" in label or "Deploy" in label else cp("input"))
+            clr = cpf("ok") if "Start" in label or "Deploy" in label else \
+                  cpf("warn") if "Download" in label else cp("input")
+            h.addstr(y, 6, label, clr | curses.A_BOLD)
             y += 1
 
         h.refresh()
@@ -601,6 +768,8 @@ class NaiveTUI:
             if key == ord('4'): self.current_menu = 1; return self.config_editor()
             if key == ord('5'): self.current_menu = 3; return self.log_viewer()
             if key == ord('6'): self.current_menu = 4; return self.vps_deploy()
+            if key == ord('7') and not binary_ok:
+                return self.binary_download_screen()
 
     def config_editor(self):
         h = self.stdscr
@@ -703,7 +872,10 @@ class NaiveTUI:
             status_txt = "● RUNNING" if self.ctl.running else "● STOPPED"
             h.addstr(y, 4, "Status:     ", cp("title")); h.addstr(status_txt, status_clr | curses.A_BOLD); y += 1
             h.addstr(y, 4, f"PID:        {self.ctl.pid or '-'}"); y += 1
-            h.addstr(y, 4, f"Binary:     {NAIVE_BIN.resolve() if NAIVE_BIN.exists() else 'NOT FOUND'}"); y += 1
+            binary_ok = NAIVE_BIN.exists()
+            bin_clr = cpf("ok") if binary_ok else cpf("err")
+            bin_txt = str(NAIVE_BIN.resolve()) if binary_ok else "NOT FOUND"
+            h.addstr(y, 4, f"Binary:     ", cp("input")); h.addstr(bin_txt, bin_clr | curses.A_BOLD); y += 1
             h.addstr(y, 4, f"Config:     {self.cfg.path.resolve()}"); y += 2
 
             buttons = [
@@ -711,13 +883,15 @@ class NaiveTUI:
                 ("[2]  Stop", "stop", cpf("err")),
                 ("[3]  Restart", "restart", cpf("warn")),
             ]
+            if not binary_ok:
+                buttons.append(("[4]  Download Binary", "download", cpf("warn")))
             for label, action, clr in buttons:
                 h.addstr(y, 6, label, clr | curses.A_BOLD)
-                h.addstr(f"  —  {action.capitalize()} naive client")
+                h.addstr(f"  —  {action.capitalize()} naive client" if action != "download" else "  —  Download naiveproxy binary")
                 y += 1
 
             h.attron(cpf("dim"))
-            h.addstr(self.height - 4, 4, " 1/2/3=action  q=back")
+            h.addstr(self.height - 4, 4, " 1/2/3/4=action  q=back")
             h.attroff(cpf("dim"))
             h.refresh()
             self._draw_status_bar()
@@ -733,6 +907,8 @@ class NaiveTUI:
             elif key == ord('3'):
                 r = self.ctl.restart()
                 self._notify({"ok": "Restarted", "no_binary": "naive binary not found", "already_running": "Already running"}.get(r, r))
+            elif key == ord('4') and not binary_ok:
+                return self.binary_download_screen()
             elif key in (ord('q'), 27): self.current_menu = 0; return self.dashboard()
             elif key == 9: self.current_menu = (self.current_menu + 1) % len(self.menu_items); return self._route()
 

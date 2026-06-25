@@ -9,21 +9,23 @@ Terminal UI для управления [NaïveProxy](https://github.com/klzgrad
 - **Process Control** — запуск, остановка, перезапуск `naive` клиента с отображением PID
 - **Log Viewer** — просмотр логов в реальном времени (follow/scroll режимы)
 - **VPS Deploy** — деплой серверной части (Caddy + Naive fork of forwardproxy) на удалённый сервер через SSH
+- **Auto-download binary** — если `naive` не найден, TUI предложит скачать с GitHub
 - **Zero dependencies** — только стандартная библиотека Python (curses)
 
 ## Быстрый старт
 
 ```sh
-# 1. Клонировать и запустить TUI (без установки)
+# Клонировать и запустить TUI — всё остальное внутри!
 git clone https://github.com/ar1gel/naiveproxy-tui.git && cd naiveproxy-tui && ./naiveproxy-tui
 ```
 
-TUI сам покажет подсказки. Для работы нужно:
+TUI автоматически обнаружит отсутствие бинарника и предложит скачать его по кнопке `7`.  
+Достаточно нажать `7` → TUI сам скачает, распакует и установит `naive` под вашу платформу.
 
-1. Скачать [naiveproxy](https://github.com/klzgrad/naiveproxy/releases/latest) бинарник для своей платформы
-2. Положить `naive` рядом с `naiveproxy-tui` (или в `$PATH`)
-3. Настроить `config.json` через Config Editor в TUI
-4. Запустить клиент (кнопка `1` на Dashboard или Process Control)
+Дальше:
+
+1. Настроить `config.json` через Config Editor в TUI
+2. Запустить клиент (кнопка `1` на Dashboard или Process Control)
 
 ### Деплой на VPS (одной командой)
 
