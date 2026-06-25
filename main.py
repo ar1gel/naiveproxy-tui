@@ -60,6 +60,15 @@ def cpf(name, attr=0):
     return cp(name) | attr
 
 
+def _listen_as_list(data: dict) -> list[str]:
+    raw = data.get("listen", [])
+    if isinstance(raw, str):
+        return [raw]
+    if isinstance(raw, list):
+        return raw
+    return []
+
+
 # ── Configuration Manager ─────────────────────────────────────────
 
 class ConfigManager:
@@ -93,7 +102,7 @@ class ConfigManager:
 
     def to_cmd_args(self) -> list[str]:
         args = []
-        for listen in self.data.get("listen", []):
+        for listen in _listen_as_list(self.data):
             args += ["--listen", listen]
         proxy = self.data.get("proxy", "")
         if proxy:
@@ -112,7 +121,7 @@ class ConfigManager:
             args += ["--idle-timeout", str(idle_to)]
         extra = self.data.get("extra-headers")
         if extra:
-            args += ["--extra-headers", extra]
+            args += ["--extra-headers", str(extra)]
         host_resolver = self.data.get("host-resolver-rules")
         if host_resolver:
             args += ["--host-resolver-rules", host_resolver]
@@ -172,6 +181,7 @@ class NaiveController:
         if not self.running:
             self.status_text = "stopped"
             return "not_running"
+        self._stop_event.set()
         try:
             os.killpg(os.getpgid(self.process.pid), signal.SIGTERM)
             self.process.wait(timeout=5)
@@ -194,11 +204,13 @@ class NaiveController:
     def _reader(self):
         while not self._stop_event.is_set():
             if self.process and self.process.stdout:
-                line = self.process.stdout.readline()
-                if not line:
+                try:
+                    line = self.process.stdout.readline()
+                    if not line:
+                        break
+                    self.log_queue.put(line.decode("utf-8", errors="replace").rstrip())
+                except ValueError:
                     break
-                self.log_queue.put(line.decode("utf-8", errors="replace").rstrip())
-        self._stop_event.clear()
 
     def get_logs(self, max_lines=200) -> list[str]:
         lines = []
@@ -248,7 +260,6 @@ class NaiveDownloader:
         key = (sys_name, machine)
         suffix = self.ARCH_MAP.get(key)
         if not suffix:
-            # try without version
             for (os_name, arch), val in self.ARCH_MAP.items():
                 if os_name == sys_name and arch in machine:
                     suffix = val
@@ -259,7 +270,6 @@ class NaiveDownloader:
         return suffix
 
     def download(self, target_path: Path):
-        import platform
         import urllib.request
         import tarfile
         import io
@@ -275,15 +285,13 @@ class NaiveDownloader:
 
         def _run():
             try:
-                self.status.append(f"[*] Detecting latest release ...")
+                self.status.append("[*] Detecting latest release ...")
                 req = urllib.request.Request(self.API,
                     headers={"User-Agent": "naiveproxy-tui/1.0", "Accept": "application/json"})
                 resp = urllib.request.urlopen(req, timeout=15)
                 rel = json.loads(resp.read().decode())
                 tag = rel["tag_name"]
-                version = tag.lstrip("v")
 
-                # find asset
                 asset_name = f"naiveproxy-{tag}-{asset_suffix}.tar.xz"
                 dl_url = None
                 for a in rel.get("assets", []):
@@ -303,9 +311,7 @@ class NaiveDownloader:
                 data = dl_resp.read()
                 self.status.append(f"[*] Downloaded {len(data)//1024} KB, extracting ...")
 
-                # tar.xz -> naive binary
                 with tarfile.open(fileobj=io.BytesIO(data), mode="r:xz") as tar:
-                    # The archive root is a directory named "naiveproxy-v{version}-{suffix}/"
                     root_dir = f"naiveproxy-{tag}-{asset_suffix}"
                     member = tar.getmember(f"{root_dir}/naive")
                     with tar.extractfile(member) as f:
@@ -374,7 +380,8 @@ class VPSDeployer:
 
         log_callback(f"[*] Connecting to {user}@{host}:{port} ...")
 
-        script = f"""set -e
+        # Use .format() for the script to avoid f-string clash with shell braces
+        script_template = """set -e
 echo "[*] Installing Caddy ..."
 which caddy >/dev/null 2>&1 || {{
   apt-get update -qq
@@ -400,7 +407,7 @@ cat > /etc/caddy/Caddyfile << 'CADDYEOF'
     exclude http.log.error
   }}
 }}
-:{domain} {{
+:443, {domain} {{
   tls {email}
   encode
   forward_proxy {{
@@ -414,8 +421,6 @@ cat > /etc/caddy/Caddyfile << 'CADDYEOF'
   }}
 }}
 CADDYEOF
-
-sed -i "s/{{domain}}/{domain}/; s/{email}/{email}/; s/{auser}/{auser}/; s/{apass}/{apass}/" /etc/caddy/Caddyfile
 
 setcap cap_net_bind_service=+ep /usr/bin/caddy-naive
 systemctl stop caddy 2>/dev/null || true
@@ -448,6 +453,8 @@ systemctl enable --now caddy-naive
 echo "[+] Deployment complete!"
 systemctl status caddy-naive --no-pager | head -10
 """
+        script = script_template.format(domain=domain, email=email, auser=auser, apass=apass)
+
         try:
             ssh_cmd = [
                 "ssh", f"{user}@{host}", "-p", str(port),
@@ -455,7 +462,7 @@ systemctl status caddy-naive --no-pager | head -10
                 "-o", "ConnectTimeout=10",
                 "-o", "ServerAliveInterval=30",
             ]
-            log_callback(f"[*] Running remote setup (may take a few minutes) ...")
+            log_callback("[*] Running remote setup (may take a few minutes) ...")
             proc = subprocess.Popen(
                 ssh_cmd,
                 stdin=subprocess.PIPE,
@@ -490,6 +497,14 @@ systemctl status caddy-naive --no-pager | head -10
 class NaiveTUI:
     PAD_W = 4096
 
+    SCREEN_NAMES = {
+        "dashboard": "dashboard",
+        "config_editor": "config_editor",
+        "process_control": "process_control",
+        "log_viewer": "log_viewer",
+        "vps_deploy": "vps_deploy",
+    }
+
     def __init__(self, stdscr):
         self.stdscr = stdscr
         self.cfg = ConfigManager(CONFIG_FILE)
@@ -503,14 +518,12 @@ class NaiveTUI:
         self.status_msg = ""
         self.status_time = 0
 
-        # Menu structure
         self.menu_items = [
-            (" Dashboard ", self.dashboard),
-            (" Config Editor ", self.config_editor),
-            (" Process Control ", self.process_control),
-            (" Log Viewer ", self.log_viewer),
-            (" VPS Deploy ", self.vps_deploy),
-            (" Quit ", self.do_quit),
+            "dashboard",
+            "config_editor",
+            "process_control",
+            "log_viewer",
+            "vps_deploy",
         ]
         self.current_menu = 0
 
@@ -523,9 +536,11 @@ class NaiveTUI:
             h.addstr(0, 0, " " * self.width)
         except curses.error:
             pass
-        h.addstr(0, 1, f" NaiveProxy TUI  |  {title}  ")
+        try:
+            h.addstr(0, 1, f" NaiveProxy TUI  |  {title}  ")
+        except curses.error:
+            pass
         h.attroff(cpf("title"))
-        # Status indicator
         if self.ctl.running:
             status = "RUNNING"
             sc = cpf("ok")
@@ -534,7 +549,10 @@ class NaiveTUI:
             sc = cpf("err")
         st = f" [{status}] "
         h.attron(sc | curses.A_BOLD)
-        h.addstr(0, self.width - len(st) - 1, st)
+        try:
+            h.addstr(0, max(0, self.width - len(st) - 1), st)
+        except curses.error:
+            pass
         h.attroff(sc | curses.A_BOLD)
         h.refresh()
 
@@ -551,8 +569,14 @@ class NaiveTUI:
             pass
         dt = time.time() - self.status_time
         if dt < 3:
-            h.addstr(y, 1, self.status_msg[: self.width - 2])
-        h.addstr(y, max(0, self.width - 32), " [Ctrl+Q Back  ←→ Screens]")
+            try:
+                h.addstr(y, 1, self.status_msg[: self.width - 2])
+            except curses.error:
+                pass
+        try:
+            h.addstr(y, max(0, self.width - 36), " [Ctrl+Q Back  ←→ Screens]")
+        except curses.error:
+            pass
         h.attroff(cpf("dim"))
         h.refresh()
 
@@ -564,9 +588,17 @@ class NaiveTUI:
         except curses.error:
             pass
         h.attroff(cpf("dim"))
+        labels = {
+            "dashboard": " Dashboard ",
+            "config_editor": " Config ",
+            "process_control": " Process ",
+            "log_viewer": " Logs ",
+            "vps_deploy": " Deploy ",
+        }
         x = 2
-        for i, (label, _) in enumerate(self.menu_items):
-            if i == self.current_menu:
+        for name in self.menu_items:
+            label = labels.get(name, f" {name} ")
+            if name == self.menu_items[self.current_menu]:
                 h.attron(cpf("hilite") | curses.A_BOLD)
                 h.addstr(self.height - 2, x, label)
                 h.attroff(cpf("hilite") | curses.A_BOLD)
@@ -590,13 +622,18 @@ class NaiveTUI:
                      width: int = 0, secret: bool = False) -> str:
         h = self.stdscr
         w = width or (self.width - x - len(label) - 4)
-        h.addstr(y, x, label, cpf("title"))
+        try:
+            h.addstr(y, x, label, cpf("title"))
+        except curses.error:
+            return value
         fx = x + len(label) + 1
-        h.addstr(y, fx, " " * w, cp("input"))
-        display = "*" * len(value) if secret else value
-        h.addstr(y, fx, display[:w], cp("input"))
+        try:
+            h.addstr(y, fx, " " * w, cp("input"))
+            display = "*" * len(value) if secret else value
+            h.addstr(y, fx, display[:w], cp("input"))
+        except curses.error:
+            return value
         h.move(y, fx + min(len(value), w - 1))
-        # Simple inline editing using curses.textpad
         edit_win = curses.newwin(1, w, y, fx)
         edit_win.attron(cp("input"))
         tb = curses.textpad.Textbox(edit_win, insert_mode=True)
@@ -606,7 +643,6 @@ class NaiveTUI:
         try:
             result = tb.edit(validator=self._edit_validator)
         except TypeError:
-            # Python < 3.10 or minimal build without validator support
             try:
                 result = tb.edit()
             except KeyboardInterrupt:
@@ -622,132 +658,107 @@ class NaiveTUI:
             return curses.ascii.BEL
         return ch
 
-    def _select_file(self, title: str) -> Optional[str]:
-        """Simple file browser."""
-        h = self.stdscr
-        h.attron(cpf("title"))
-        h.addstr(self.height // 2 - 5, 2, f" {title} ", cpf("title"))
-        h.attroff(cpf("title"))
-        h.refresh()
-        cwd = Path.cwd()
-        files = list(cwd.iterdir())
-        files.sort(key=lambda p: (not p.is_dir(), p.name.lower()))
-        idx = 0
-        offset = 0
-        max_visible = self.height - 12
-        while True:
-            h.attron(cp("input"))
-            for y in range(self.height // 2 - 4, self.height - 6):
-                h.addstr(y, 2, " " * (self.width - 4))
-            h.attroff(cp("input"))
-            h.addstr(self.height // 2 - 4, 2, " Navigate ↑↓  Enter=select  ESC=back")
-            visible = files[offset: offset + max_visible]
-            for i, p in enumerate(visible):
-                y = self.height // 2 - 3 + i
-                prefix = "[D] " if p.is_dir() else "    "
-                line = f"{prefix}{p.name}"
-                if i + offset == idx:
-                    h.attron(cpf("hilite"))
-                    h.addstr(y, 4, " " + line[:self.width - 10] + " ")
-                    h.attroff(cpf("hilite"))
-                else:
-                    h.addstr(y, 4, " " + line[:self.width - 10])
-            h.refresh()
-            key = h.getch()
-            if key == 27:  # ESC
-                return None
-            elif key in (curses.KEY_UP, ord('k')):
-                idx = max(0, idx - 1)
-                if idx < offset:
-                    offset = max(0, offset - 1)
-            elif key in (curses.KEY_DOWN, ord('j')):
-                idx = min(len(files) - 1, idx + 1)
-                if idx >= offset + max_visible:
-                    offset = min(len(files) - max_visible, offset + 1)
-            elif key in (curses.KEY_ENTER, 10, 13, ord(' ')):
-                sel = files[idx]
-                if sel.is_dir():
-                    cwd = sel
-                    files = list(cwd.iterdir())
-                    files.sort(key=lambda p: (not p.is_dir(), p.name.lower()))
-                    idx = 0
-                    offset = 0
-                else:
-                    return str(sel)
+    # ── Screen navigation helpers ──
 
-    def binary_download_screen(self):
+    def _nav_left(self) -> str | None:
+        self.current_menu = max(0, self.current_menu - 1)
+        return self.menu_items[self.current_menu]
+
+    def _nav_right(self) -> str | None:
+        self.current_menu = min(len(self.menu_items) - 1, self.current_menu + 1)
+        return self.menu_items[self.current_menu]
+
+    def _nav_tab(self) -> str | None:
+        self.current_menu = (self.current_menu + 1) % len(self.menu_items)
+        return self.menu_items[self.current_menu]
+
+    def _nav_back(self) -> str:
+        self.current_menu = 0
+        return "dashboard"
+
+    def binary_download_screen(self) -> str:
         h = self.stdscr
         if self.downloader.done:
             self.downloader = NaiveDownloader()
         self.downloader.download(NAIVE_BIN)
         spinner = "|/-\\"
         sp_idx = 0
-        last_status_len = 0
         while not self.downloader.done:
             self._draw_header("Download Naive Binary")
             self._clear_content()
             lines = self.downloader.poll_status()
             for i, line in enumerate(lines[-8:]):
                 clr = cpf("ok") if line.startswith("[+]") else cpf("err") if line.startswith("[!]") else cp("input")
-                h.addstr(2 + i, 4, f" {spinner[sp_idx % 4]} {line[:self.width-10]}", clr)
+                try:
+                    h.addstr(2 + i, 4, f" {spinner[sp_idx % 4]} {line[:self.width-10]}", clr)
+                except curses.error:
+                    pass
             sp_idx += 1
             h.refresh()
             self._draw_status_bar()
             self._draw_menu_bar()
             time.sleep(0.12)
-        # Show final result
         self._draw_header("Download Naive Binary")
         self._clear_content()
         lines = self.downloader.poll_status()
         for i, line in enumerate(lines):
             clr = cpf("ok") if line.startswith("[+]") else cpf("err") if line.startswith("[!]") else cp("input")
-            h.addstr(2 + i, 4, f"  {line[:self.width-10]}", clr)
+            try:
+                h.addstr(2 + i, 4, f"  {line[:self.width-10]}", clr)
+            except curses.error:
+                pass
         if self.downloader.success:
-            h.addstr(2 + len(lines) + 1, 4, " Binary installed! Press any key to continue.", cpf("ok") | curses.A_BOLD)
+            try:
+                h.addstr(2 + len(lines) + 1, 4, " Binary installed! Press any key to continue.", cpf("ok") | curses.A_BOLD)
+            except curses.error:
+                pass
         else:
-            h.addstr(2 + len(lines) + 1, 4, f" Failed: {self.downloader.error or 'unknown'}", cpf("err") | curses.A_BOLD)
-            h.addstr(2 + len(lines) + 2, 4, " Download manually from: https://github.com/klzgrad/naiveproxy/releases", cpf("dim"))
+            try:
+                h.addstr(2 + len(lines) + 1, 4, f" Failed: {self.downloader.error or 'unknown'}", cpf("err") | curses.A_BOLD)
+                h.addstr(2 + len(lines) + 2, 4, " Download manually from: https://github.com/klzgrad/naiveproxy/releases", cpf("dim"))
+            except curses.error:
+                pass
         h.refresh()
         h.getch()
         self.downloader = NaiveDownloader()
-        return self.dashboard()
+        return "dashboard"
 
     # ── Screens ──
 
-    def dashboard(self):
+    def dashboard(self) -> str:
         h = self.stdscr
         self._draw_header("Dashboard")
         self._clear_content()
         status_clr = cpf("ok") if self.ctl.running else cpf("err")
         status_txt = "● RUNNING" if self.ctl.running else "● STOPPED"
         h.attron(cpf("title"))
-        h.addstr(2, 4, f" NaiveProxy Client  ")
+        h.addstr(2, 4, " NaiveProxy Client  ")
         h.attroff(cpf("title"))
-        h.addstr(4, 4, f"Status:  "); h.addstr(status_txt, status_clr | curses.A_BOLD)
+        h.addstr(4, 4, "Status:  "); h.addstr(status_txt, status_clr | curses.A_BOLD)
         pid_txt = str(self.ctl.pid) if self.ctl.pid else "-"
         h.addstr(5, 4, f"PID:     {pid_txt}")
         h.addstr(6, 4, f"Config:  {self.cfg.path.resolve()}")
         binary_ok = NAIVE_BIN.exists()
         bin_clr = cpf("ok") if binary_ok else cpf("err")
         bin_txt = str(NAIVE_BIN.resolve()) if binary_ok else "NOT FOUND"
-        h.addstr(7, 4, f"Binary:  ", cp("input"))
+        h.addstr(7, 4, "Binary:  ", cp("input"))
         h.addstr(bin_txt, bin_clr | curses.A_BOLD)
 
         h.attron(cpf("title"))
-        h.addstr(9, 4, f" Current Config  ")
+        h.addstr(9, 4, " Current Config  ")
         h.attroff(cpf("title"))
-        listen_str = ", ".join(self.cfg.data.get("listen", []))
+        listen_str = ", ".join(_listen_as_list(self.cfg.data))
         h.addstr(10, 4, f"Listen: {listen_str}")
-        h.addstr(11, 4, f"Proxy:  {self.cfg.data.get('proxy', '-')}")
+        h.addstr(11, 4, "Proxy:  {}".format(self.cfg.data.get('proxy', '-')))
         log_val = self.cfg.data.get("log", "")
-        h.addstr(12, 4, f"Log:    {log_val if log_val else '(console)'}")
+        h.addstr(12, 4, "Log:    {}".format(log_val if log_val else '(console)'))
 
         y = 14
         actions = [
             ("[1] Start Client", "start"),
             ("[2] Stop Client", "stop"),
             ("[3] Restart Client", "restart"),
-            ("[4] Open Config Editor", "config"),
+            ("[4] Config Editor", "config"),
             ("[5] View Logs", "logs"),
         ]
         if not binary_ok:
@@ -765,42 +776,39 @@ class NaiveTUI:
             self._draw_status_bar()
             self._draw_menu_bar()
             key = h.getch()
-            if key in (curses.KEY_LEFT,): self.current_menu = max(0, self.current_menu - 1); return self._route()
-            if key in (curses.KEY_RIGHT,): self.current_menu = min(len(self.menu_items) - 1, self.current_menu + 1); return self._route()
-            if key == 9: self.current_menu = (self.current_menu + 1) % len(self.menu_items); return self._route()
-            if key in (ord('q'), 27): return self.do_quit()
+            if key in (curses.KEY_LEFT,): return self._nav_left()
+            if key in (curses.KEY_RIGHT,): return self._nav_right()
+            if key == 9: return self._nav_tab()
+            if key in (ord('q'), 27): return None
             if key == ord('1'):
                 r = self.ctl.start()
                 self._notify({"ok": "Started", "already_running": "Already running", "no_binary": "naive binary not found"}.get(r, r))
-                return self.dashboard()
             if key == ord('2'):
                 r = self.ctl.stop()
                 self._notify({"ok": "Stopped", "not_running": "Not running"}.get(r, r))
-                return self.dashboard()
             if key == ord('3'):
                 r = self.ctl.restart()
                 self._notify({"ok": "Restarted", "no_binary": "naive binary not found", "already_running": "Already running"}.get(r, r))
-                return self.dashboard()
-            if key == ord('4'): self.current_menu = 1; return self.config_editor()
-            if key == ord('5'): self.current_menu = 3; return self.log_viewer()
-            if key == ord('6'): self.current_menu = 4; return self.vps_deploy()
-            if key == ord('7') and not binary_ok:
-                return self.binary_download_screen()
+            if key == ord('4'): self.current_menu = 1; return "config_editor"
+            if key == ord('5'): self.current_menu = 3; return "log_viewer"
+            if key == ord('6') and binary_ok: self.current_menu = 4; return "vps_deploy"
+            if key == ord('7') and not binary_ok: return "binary_download_screen"
 
-    def config_editor(self):
+    def config_editor(self) -> str:
         h = self.stdscr
         cfg = self.cfg.data
+        listen_list = _listen_as_list(cfg)
         fields = [
-            ("listen[0]", "Listen URI 1", cfg.get("listen", [""])[0] if cfg.get("listen") else ""),
-            ("listen[1]", "Listen URI 2", cfg.get("listen", [""] * 2)[1] if len(cfg.get("listen", [])) > 1 else ""),
+            ("listen[0]", "Listen URI 1", listen_list[0] if len(listen_list) > 0 else ""),
+            ("listen[1]", "Listen URI 2", listen_list[1] if len(listen_list) > 1 else ""),
             ("proxy", "Proxy URI", cfg.get("proxy", "")),
             ("log", "Log path", cfg.get("log", "")),
             ("insecure-concurrency", "Insecure concurrency", str(cfg.get("insecure-concurrency", ""))),
             ("tunnel-timeout", "Tunnel timeout (s)", str(cfg.get("tunnel-timeout", ""))),
             ("idle-timeout", "Idle timeout (s)", str(cfg.get("idle-timeout", ""))),
-            ("extra-headers", "Extra headers", cfg.get("extra-headers", "")),
-            ("host-resolver-rules", "Host resolver rules", cfg.get("host-resolver-rules", "")),
-            ("resolver-range", "Resolver range", cfg.get("resolver-range", "")),
+            ("extra-headers", "Extra headers", str(cfg.get("extra-headers", ""))),
+            ("host-resolver-rules", "Host resolver rules", str(cfg.get("host-resolver-rules", ""))),
+            ("resolver-range", "Resolver range", str(cfg.get("resolver-range", ""))),
             ("no-post-quantum", "No post-quantum", str(cfg.get("no-post-quantum", False))),
         ]
         idx = 0
@@ -820,7 +828,7 @@ class NaiveTUI:
                 h.addstr(y, 2, f" {prefix} {label}: ", clr)
                 h.addstr(f"{display}", cp("input"))
             h.attron(cpf("dim"))
-            h.addstr(self.height - 4, 2, " ↑↓/Tab navigate  Enter=edit  ←→ screens  s=save  d=defaults")
+            h.addstr(self.height - 4, 2, " ↑↓/Tab navigate  Enter=edit  s=save  d=defaults  q=dashboard")
             h.attroff(cpf("dim"))
             h.refresh()
             self._draw_status_bar()
@@ -839,7 +847,6 @@ class NaiveTUI:
                 fields[idx] = (k, lbl, new_val)
                 self._notify(f"{lbl} updated")
             elif key == ord('s'):
-                # Rebuild config
                 new_listen = []
                 v1 = fields[0][2]
                 v2 = fields[1][2]
@@ -851,6 +858,12 @@ class NaiveTUI:
                 for k, lbl, val in fields[4:]:
                     if k == "no-post-quantum":
                         cfg[k] = val.lower() in ("true", "1", "yes")
+                    elif k == "extra-headers":
+                        cfg[k] = val if val else None
+                    elif k == "host-resolver-rules":
+                        cfg[k] = val if val else None
+                    elif k == "resolver-range":
+                        cfg[k] = val if val else None
                     elif val:
                         try:
                             cfg[k] = int(val)
@@ -858,17 +871,21 @@ class NaiveTUI:
                             cfg[k] = val
                     else:
                         cfg.pop(k, None)
+                for k in ("extra-headers", "host-resolver-rules", "resolver-range"):
+                    if cfg.get(k) is None:
+                        cfg.pop(k, None)
                 if self.cfg.save():
                     self._notify("Config saved")
                 else:
                     self._notify("Failed to save config")
             elif key == ord('d'):
                 self.cfg.data = self.cfg._load_default()
+                listen_list = _listen_as_list(cfg)
                 fields = [
-                    ("listen[0]", "Listen URI 1", self.cfg.data.get("listen", [""])[0] if self.cfg.data.get("listen") else ""),
-                    ("listen[1]", "Listen URI 2", self.cfg.data.get("listen", [""] * 2)[1] if len(self.cfg.data.get("listen", [])) > 1 else ""),
-                    ("proxy", "Proxy URI", self.cfg.data.get("proxy", "")),
-                    ("log", "Log path", self.cfg.data.get("log", "")),
+                    ("listen[0]", "Listen URI 1", listen_list[0] if len(listen_list) > 0 else ""),
+                    ("listen[1]", "Listen URI 2", listen_list[1] if len(listen_list) > 1 else ""),
+                    ("proxy", "Proxy URI", cfg.get("proxy", "")),
+                    ("log", "Log path", cfg.get("log", "")),
                     ("insecure-concurrency", "Insecure concurrency", ""),
                     ("tunnel-timeout", "Tunnel timeout (s)", ""),
                     ("idle-timeout", "Idle timeout (s)", ""),
@@ -879,10 +896,9 @@ class NaiveTUI:
                 ]
                 self._notify("Defaults restored")
             elif key in (ord('q'), 27):
-                self.current_menu = 0
-                return self.dashboard()
+                return "dashboard"
 
-    def process_control(self):
+    def process_control(self) -> str:
         h = self.stdscr
         while True:
             self._draw_header("Process Control")
@@ -895,7 +911,7 @@ class NaiveTUI:
             binary_ok = NAIVE_BIN.exists()
             bin_clr = cpf("ok") if binary_ok else cpf("err")
             bin_txt = str(NAIVE_BIN.resolve()) if binary_ok else "NOT FOUND"
-            h.addstr(y, 4, f"Binary:     ", cp("input")); h.addstr(bin_txt, bin_clr | curses.A_BOLD); y += 1
+            h.addstr(y, 4, "Binary:     ", cp("input")); h.addstr(bin_txt, bin_clr | curses.A_BOLD); y += 1
             h.addstr(y, 4, f"Config:     {self.cfg.path.resolve()}"); y += 2
 
             buttons = [
@@ -911,7 +927,7 @@ class NaiveTUI:
                 y += 1
 
             h.attron(cpf("dim"))
-            h.addstr(self.height - 4, 4, " 1/2/3/4=action  q=back")
+            h.addstr(self.height - 4, 4, " 1/2/3/4=action  q=dashboard")
             h.attroff(cpf("dim"))
             h.refresh()
             self._draw_status_bar()
@@ -928,13 +944,13 @@ class NaiveTUI:
                 r = self.ctl.restart()
                 self._notify({"ok": "Restarted", "no_binary": "naive binary not found", "already_running": "Already running"}.get(r, r))
             elif key == ord('4') and not binary_ok:
-                return self.binary_download_screen()
-            elif key in (curses.KEY_LEFT,): self.current_menu = max(0, self.current_menu - 1); return self._route()
-            elif key in (curses.KEY_RIGHT,): self.current_menu = min(len(self.menu_items) - 1, self.current_menu + 1); return self._route()
-            elif key in (ord('q'), 27): self.current_menu = 0; return self.dashboard()
-            elif key == 9: self.current_menu = (self.current_menu + 1) % len(self.menu_items); return self._route()
+                return "binary_download_screen"
+            elif key in (curses.KEY_LEFT,): return self._nav_left()
+            elif key in (curses.KEY_RIGHT,): return self._nav_right()
+            elif key in (ord('q'), 27): return self._nav_back()
+            elif key == 9: return self._nav_tab()
 
-    def log_viewer(self):
+    def log_viewer(self) -> str:
         h = self.stdscr
         pad = curses.newpad(self.PAD_W, self.width - 2)
         all_logs: list[str] = []
@@ -942,7 +958,6 @@ class NaiveTUI:
 
         while True:
             self._draw_header("Log Viewer")
-            # Gather new logs
             new_logs = self.ctl.get_logs(500)
             all_logs.extend(new_logs)
             if len(all_logs) > 2000:
@@ -954,10 +969,12 @@ class NaiveTUI:
                 if i >= self.PAD_W:
                     break
                 safe = line[:self.width - 4]
-                pad.addstr(i, 0, safe)
+                try:
+                    pad.addstr(i, 0, safe)
+                except curses.error:
+                    pass
             pad.attroff(cp("input"))
 
-            pad_height = max(len(all_logs), self.height - 4)
             view_h = self.height - 4
             if follow:
                 self.log_pad_pos = max(0, len(all_logs) - view_h)
@@ -968,7 +985,10 @@ class NaiveTUI:
 
             h.attron(cpf("dim"))
             follow_txt = "FOLLOW" if follow else "SCROLL"
-            h.addstr(self.height - 3, 1, f" {follow_txt}  |  Lines: {len(all_logs)}  |  ↑↓ scroll  f=follow  c=clear  q=back")
+            try:
+                h.addstr(self.height - 3, 1, f" {follow_txt}  |  Lines: {len(all_logs)}  |  ↑↓ scroll  f=follow  c=clear  q=back")
+            except curses.error:
+                pass
             h.attroff(cpf("dim"))
             h.refresh()
             self._draw_status_bar()
@@ -994,18 +1014,12 @@ class NaiveTUI:
                 all_logs.clear()
                 self.log_pad_pos = 0
                 self._notify("Logs cleared")
-            elif key in (curses.KEY_LEFT,):
-                self.current_menu = max(0, self.current_menu - 1); return self._route()
-            elif key in (curses.KEY_RIGHT,):
-                self.current_menu = min(len(self.menu_items) - 1, self.current_menu + 1); return self._route()
-            elif key in (ord('q'), 27):
-                self.current_menu = 0
-                return self.dashboard()
-            elif key == 9:
-                self.current_menu = (self.current_menu + 1) % len(self.menu_items)
-                return self._route()
+            elif key in (curses.KEY_LEFT,): return self._nav_left()
+            elif key in (curses.KEY_RIGHT,): return self._nav_right()
+            elif key in (ord('q'), 27): return self._nav_back()
+            elif key == 9: return self._nav_tab()
 
-    def vps_deploy(self):
+    def vps_deploy(self) -> str:
         h = self.stdscr
         dcfg = self.deployer.config
         fields = [
@@ -1019,7 +1033,7 @@ class NaiveTUI:
         ]
         idx = 0
         offset = 0
-        max_visible = min(len(fields), self.height - 8)
+        max_visible = max(1, min(len(fields), self.height - 8))
         deploy_output: list[str] = []
         deploying = False
 
@@ -1039,16 +1053,21 @@ class NaiveTUI:
                 h.addstr(y + i, 4, f" {prefix} {label}: ", clr)
                 h.addstr(display, cp("input"))
 
-            # Deploy output area
             out_y = y + max_visible + 1
             if deploy_output:
                 for j, line in enumerate(deploy_output[-8:]):
                     if out_y + j < self.height - 4:
                         safe = line[:self.width - 4]
-                        h.addstr(out_y + j, 4, safe[:self.width - 6])
+                        try:
+                            h.addstr(out_y + j, 4, safe[:self.width - 6])
+                        except curses.error:
+                            pass
 
             h.attron(cpf("dim"))
-            h.addstr(self.height - 4, 2, " ↑↓/Tab navigate  Enter=edit  ←→ screens  d=deploy  s=save")
+            try:
+                h.addstr(self.height - 4, 2, " ↑↓/Tab navigate  Enter=edit  d=deploy  s=save  q=dashboard")
+            except curses.error:
+                pass
             h.attroff(cpf("dim"))
             h.refresh()
             self._draw_status_bar()
@@ -1061,6 +1080,10 @@ class NaiveTUI:
             elif key == curses.KEY_DOWN:
                 idx = min(len(fields) - 1, idx + 1)
                 offset = max(0, idx - max_visible + 1)
+            elif key in (9,):  # Tab → next field
+                idx = min(len(fields) - 1, idx + 1); offset = max(0, idx - max_visible + 1)
+            elif key in (curses.KEY_BTAB, 353):
+                idx = max(0, idx - 1); offset = min(offset, idx)
             elif key in (10, 13, ord(' ')):
                 k, lbl, val = fields[idx]
                 secret = k == "auth_pass"
@@ -1096,23 +1119,9 @@ class NaiveTUI:
                 t = threading.Thread(target=deploy_thread, daemon=True)
                 t.start()
 
-            elif key in (9,):  # Tab → next field
-                idx = min(len(fields) - 1, idx + 1); offset = max(0, idx - max_visible + 1)
-            elif key in (curses.KEY_BTAB, 353):  # Shift+Tab → prev field
-                idx = max(0, idx - 1); offset = min(offset, idx)
-            elif key in (ord('q'), 27): self.current_menu = 0; return self.dashboard()
+            elif key in (ord('q'), 27): return "dashboard"
 
-    # ── Routing ──
-
-    def _route(self):
-        """Route to the currently selected menu item."""
-        if self.current_menu < len(self.menu_items):
-            _, handler = self.menu_items[self.current_menu]
-            return handler()
-        return self.dashboard()
-
-    def do_quit(self):
-        return None
+    # ── Event loop ──
 
     def run(self):
         self.stdscr.clear()
@@ -1121,7 +1130,31 @@ class NaiveTUI:
         self.stdscr.keypad(True)
         self.height, self.width = self.stdscr.getmaxyx()
         init_colors()
-        self.dashboard()
+
+        screen = "dashboard"
+        screen_map = {
+            "dashboard": self.dashboard,
+            "config_editor": self.config_editor,
+            "process_control": self.process_control,
+            "log_viewer": self.log_viewer,
+            "vps_deploy": self.vps_deploy,
+            "binary_download_screen": self.binary_download_screen,
+        }
+
+        while screen:
+            # Update terminal size on each iteration
+            try:
+                self.height, self.width = self.stdscr.getmaxyx()
+            except curses.error:
+                pass
+            handler = screen_map.get(screen)
+            if handler:
+                screen = handler()
+            else:
+                break
+
+    def do_quit(self):
+        return None
 
 
 def main():
@@ -1143,6 +1176,21 @@ def main():
         curses.wrapper(lambda stdscr: NaiveTUI(stdscr).run())
     except KeyboardInterrupt:
         pass
+    finally:
+        # Cleanup: stop naive if running
+        from pathlib import Path as _P
+        from json import loads as _l
+        cpath = CONFIG_FILE if CONFIG_FILE.exists() else None
+        if cpath:
+            try:
+                dummy_cfg = ConfigManager.__new__(ConfigManager)
+                dummy_cfg.data = _l(cpath.read_text()) if cpath.exists() else {}
+            except Exception:
+                dummy_cfg = None
+            if dummy_cfg:
+                ctl = NaiveController.__new__(NaiveController)
+                ctl.__init__(dummy_cfg)
+                ctl.stop()
     print("\nGoodbye.")
 
 
