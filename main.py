@@ -605,6 +605,12 @@ class NaiveTUI:
         curses.curs_set(1)
         try:
             result = tb.edit(validator=self._edit_validator)
+        except TypeError:
+            # Python < 3.10 or minimal build without validator support
+            try:
+                result = tb.edit()
+            except KeyboardInterrupt:
+                result = value
         except KeyboardInterrupt:
             result = value
         curses.curs_set(0)
@@ -612,9 +618,7 @@ class NaiveTUI:
 
     @staticmethod
     def _edit_validator(ch):
-        if ch == curses.ascii.ESC or ch == curses.ascii.BEL:
-            return curses.ascii.BEL
-        if ch in (curses.KEY_ENTER, 10, 13):
+        if ch in (curses.ascii.ESC, curses.ascii.BEL, curses.KEY_ENTER, 10, 13):
             return curses.ascii.BEL
         return ch
 
