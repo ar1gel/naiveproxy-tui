@@ -149,7 +149,7 @@ class NaiveController:
             return "already_running"
         if not NAIVE_BIN.exists():
             return "no_binary"
-        cmd = [str(naive)] + self.cfg.to_cmd_args()
+        cmd = [str(NAIVE_BIN)] + self.cfg.to_cmd_args()
         try:
             self._stop_event.clear()
             self.process = subprocess.Popen(
@@ -878,13 +878,9 @@ class NaiveTUI:
                     ("no-post-quantum", "No post-quantum", "False"),
                 ]
                 self._notify("Defaults restored")
-            elif key in (curses.KEY_LEFT,):
-                self.current_menu = max(0, self.current_menu - 1); return self._route()
-            elif key in (curses.KEY_RIGHT,):
-                self.current_menu = min(len(self.menu_items) - 1, self.current_menu + 1); return self._route()
             elif key in (ord('q'), 27):
                 self.current_menu = 0
-                return self._route()
+                return self.dashboard()
 
     def process_control(self):
         h = self.stdscr
@@ -1104,8 +1100,6 @@ class NaiveTUI:
                 idx = min(len(fields) - 1, idx + 1); offset = max(0, idx - max_visible + 1)
             elif key in (curses.KEY_BTAB, 353):  # Shift+Tab → prev field
                 idx = max(0, idx - 1); offset = min(offset, idx)
-            elif key in (curses.KEY_LEFT,): self.current_menu = max(0, self.current_menu - 1); return self._route()
-            elif key in (curses.KEY_RIGHT,): self.current_menu = min(len(self.menu_items) - 1, self.current_menu + 1); return self._route()
             elif key in (ord('q'), 27): self.current_menu = 0; return self.dashboard()
 
     # ── Routing ──
