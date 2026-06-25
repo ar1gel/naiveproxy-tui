@@ -552,7 +552,7 @@ class NaiveTUI:
         dt = time.time() - self.status_time
         if dt < 3:
             h.addstr(y, 1, self.status_msg[: self.width - 2])
-        h.addstr(y, max(0, self.width - 30), " [Ctrl+Q Back  Tab/Arrows]")
+        h.addstr(y, max(0, self.width - 32), " [Ctrl+Q Back  ←→ Screens]")
         h.attroff(cpf("dim"))
         h.refresh()
 
@@ -820,7 +820,7 @@ class NaiveTUI:
                 h.addstr(y, 2, f" {prefix} {label}: ", clr)
                 h.addstr(f"{display}", cp("input"))
             h.attron(cpf("dim"))
-            h.addstr(self.height - 4, 2, " ↑↓/Tab navigate  Enter=edit  s=save  d=defaults  q=back")
+            h.addstr(self.height - 4, 2, " ↑↓/Tab navigate  Enter=edit  ←→ screens  s=save  d=defaults")
             h.attroff(cpf("dim"))
             h.refresh()
             self._draw_status_bar()
@@ -878,6 +878,10 @@ class NaiveTUI:
                     ("no-post-quantum", "No post-quantum", "False"),
                 ]
                 self._notify("Defaults restored")
+            elif key in (curses.KEY_LEFT,):
+                self.current_menu = max(0, self.current_menu - 1); return self._route()
+            elif key in (curses.KEY_RIGHT,):
+                self.current_menu = min(len(self.menu_items) - 1, self.current_menu + 1); return self._route()
             elif key in (ord('q'), 27):
                 self.current_menu = 0
                 return self._route()
@@ -929,6 +933,8 @@ class NaiveTUI:
                 self._notify({"ok": "Restarted", "no_binary": "naive binary not found", "already_running": "Already running"}.get(r, r))
             elif key == ord('4') and not binary_ok:
                 return self.binary_download_screen()
+            elif key in (curses.KEY_LEFT,): self.current_menu = max(0, self.current_menu - 1); return self._route()
+            elif key in (curses.KEY_RIGHT,): self.current_menu = min(len(self.menu_items) - 1, self.current_menu + 1); return self._route()
             elif key in (ord('q'), 27): self.current_menu = 0; return self.dashboard()
             elif key == 9: self.current_menu = (self.current_menu + 1) % len(self.menu_items); return self._route()
 
@@ -992,6 +998,10 @@ class NaiveTUI:
                 all_logs.clear()
                 self.log_pad_pos = 0
                 self._notify("Logs cleared")
+            elif key in (curses.KEY_LEFT,):
+                self.current_menu = max(0, self.current_menu - 1); return self._route()
+            elif key in (curses.KEY_RIGHT,):
+                self.current_menu = min(len(self.menu_items) - 1, self.current_menu + 1); return self._route()
             elif key in (ord('q'), 27):
                 self.current_menu = 0
                 return self.dashboard()
@@ -1042,7 +1052,7 @@ class NaiveTUI:
                         h.addstr(out_y + j, 4, safe[:self.width - 6])
 
             h.attron(cpf("dim"))
-            h.addstr(self.height - 4, 2, " ↑↓/Tab navigate  Enter=edit  d=deploy  s=save  q=back")
+            h.addstr(self.height - 4, 2, " ↑↓/Tab navigate  Enter=edit  ←→ screens  d=deploy  s=save")
             h.attroff(cpf("dim"))
             h.refresh()
             self._draw_status_bar()
@@ -1094,6 +1104,8 @@ class NaiveTUI:
                 idx = min(len(fields) - 1, idx + 1); offset = max(0, idx - max_visible + 1)
             elif key in (curses.KEY_BTAB, 353):  # Shift+Tab → prev field
                 idx = max(0, idx - 1); offset = min(offset, idx)
+            elif key in (curses.KEY_LEFT,): self.current_menu = max(0, self.current_menu - 1); return self._route()
+            elif key in (curses.KEY_RIGHT,): self.current_menu = min(len(self.menu_items) - 1, self.current_menu + 1); return self._route()
             elif key in (ord('q'), 27): self.current_menu = 0; return self.dashboard()
 
     # ── Routing ──
