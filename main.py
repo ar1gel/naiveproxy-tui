@@ -519,7 +519,10 @@ class NaiveTUI:
     def _draw_header(self, title: str):
         h = self.stdscr
         h.attron(cpf("title"))
-        h.addstr(0, 0, " " * self.width)
+        try:
+            h.addstr(0, 0, " " * self.width)
+        except curses.error:
+            pass
         h.addstr(0, 1, f" NaiveProxy TUI  |  {title}  ")
         h.attroff(cpf("title"))
         # Status indicator
@@ -542,7 +545,10 @@ class NaiveTUI:
         h = self.stdscr
         y = self.height - 1
         h.attron(cpf("dim"))
-        h.addstr(y, 0, " " * self.width)
+        try:
+            h.addstr(y, 0, " " * (self.width - 1))
+        except curses.error:
+            pass
         dt = time.time() - self.status_time
         if dt < 3:
             h.addstr(y, 1, self.status_msg[: self.width - 2])
@@ -553,7 +559,10 @@ class NaiveTUI:
     def _draw_menu_bar(self):
         h = self.stdscr
         h.attron(cpf("dim"))
-        h.addstr(self.height - 2, 0, " " * self.width)
+        try:
+            h.addstr(self.height - 2, 0, " " * (self.width - 1))
+        except curses.error:
+            pass
         h.attroff(cpf("dim"))
         x = 2
         for i, (label, _) in enumerate(self.menu_items):
@@ -567,9 +576,12 @@ class NaiveTUI:
 
     def _clear_content(self):
         for y in range(1, self.height - 3):
-            self.stdscr.attron(cp("input"))
-            self.stdscr.addstr(y, 0, " " * self.width)
-            self.stdscr.attroff(cp("input"))
+            try:
+                self.stdscr.attron(cp("input"))
+                self.stdscr.addstr(y, 0, " " * (self.width - 1))
+                self.stdscr.attroff(cp("input"))
+            except curses.error:
+                pass
 
     def _notify(self, msg: str):
         self._draw_status_bar(msg)
