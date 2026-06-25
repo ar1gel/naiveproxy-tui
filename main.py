@@ -104,34 +104,34 @@ class ConfigManager:
     def to_cmd_args(self) -> list[str]:
         args = []
         for listen in _listen_as_list(self.data):
-            args += ["--listen", listen]
+            args.append(f"--listen={listen}")
         proxy = self.data.get("proxy", "")
         if proxy:
-            args += ["--proxy", proxy]
+            args.append(f"--proxy={proxy}")
         log = self.data.get("log")
         if log:
-            args += ["--log", log]
+            args.append(f"--log={log}")
         insecure = self.data.get("insecure-concurrency")
         if insecure:
-            args += ["--insecure-concurrency", str(insecure)]
+            args.append(f"--insecure-concurrency={insecure}")
         tunnel_to = self.data.get("tunnel-timeout")
         if tunnel_to:
-            args += ["--tunnel-timeout", str(tunnel_to)]
+            args.append(f"--tunnel-timeout={tunnel_to}")
         idle_to = self.data.get("idle-timeout")
         if idle_to:
-            args += ["--idle-timeout", str(idle_to)]
+            args.append(f"--idle-timeout={idle_to}")
         extra = self.data.get("extra-headers")
         if extra:
-            args += ["--extra-headers", str(extra)]
+            args.append(f"--extra-headers={extra}")
         host_resolver = self.data.get("host-resolver-rules")
         if host_resolver:
-            args += ["--host-resolver-rules", host_resolver]
+            args.append(f"--host-resolver-rules={host_resolver}")
         resolver_range = self.data.get("resolver-range")
         if resolver_range:
-            args += ["--resolver-range", resolver_range]
+            args.append(f"--resolver-range={resolver_range}")
         no_pq = self.data.get("no-post-quantum", False)
         if no_pq:
-            args += ["--no-post-quantum"]
+            args.append("--no-post-quantum")
         return args
 
 
