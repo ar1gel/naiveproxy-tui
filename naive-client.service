@@ -6,7 +6,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=%h/.local/bin/naive --config=%h/.config/naiveproxy/config.json
+ExecStart=%h/naiveproxy-tui/naive --config=%h/naiveproxy-tui/config.json
+WorkingDirectory=%h/naiveproxy-tui
 Restart=on-failure
 RestartSec=5
 Nice=10

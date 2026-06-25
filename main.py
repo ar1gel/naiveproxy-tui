@@ -22,12 +22,13 @@ except ImportError:
     print("Error: 'curses' module required. Run on a Unix terminal.")
     sys.exit(1)
 
-# ── Paths ──────────────────────────────────────────────────────────
-CONFIG_FILE = Path("config.json")
-NAIVE_BIN = Path("./naive")
-NAIVE_DIR = Path(".").resolve()
+# ── Paths (always relative to this script's directory) ─────────────
+_SCRIPT_DIR = Path(__file__).resolve().parent
+CONFIG_FILE = _SCRIPT_DIR / "config.json"
+NAIVE_BIN = _SCRIPT_DIR / "naive"
+NAIVE_DIR = _SCRIPT_DIR
 VPS_CONFIG_FILE = Path.home() / ".config" / "naiveproxy-tui" / "vps.json"
-LOG_FILE = Path("naiveproxy-tui.log")
+LOG_FILE = _SCRIPT_DIR / "naiveproxy-tui.log"
 
 # ── Utilities ──────────────────────────────────────────────────────
 
@@ -156,9 +157,16 @@ class NaiveController:
     def start(self) -> str:
         if self.running:
             return "already_running"
-        if not NAIVE_BIN.exists():
-            return "no_binary"
-        cmd = [str(NAIVE_BIN)] + self.cfg.to_cmd_args()
+        # Look for binary: first at NAIVE_BIN, then in PATH
+        binary = NAIVE_BIN
+        if not binary.exists():
+            from shutil import which
+            path_naive = which("naive")
+            if path_naive:
+                binary = Path(path_naive)
+            else:
+                return "no_binary"
+        cmd = [str(binary)] + self.cfg.to_cmd_args()
         try:
             self._stop_event.clear()
             self.process = subprocess.Popen(
@@ -1189,21 +1197,6 @@ def main():
         curses.wrapper(lambda stdscr: NaiveTUI(stdscr).run())
     except KeyboardInterrupt:
         pass
-    finally:
-        # Cleanup: stop naive if running
-        from pathlib import Path as _P
-        from json import loads as _l
-        cpath = CONFIG_FILE if CONFIG_FILE.exists() else None
-        if cpath:
-            try:
-                dummy_cfg = ConfigManager.__new__(ConfigManager)
-                dummy_cfg.data = _l(cpath.read_text()) if cpath.exists() else {}
-            except Exception:
-                dummy_cfg = None
-            if dummy_cfg:
-                ctl = NaiveController.__new__(NaiveController)
-                ctl.__init__(dummy_cfg)
-                ctl.stop()
     print("\nGoodbye.")
 
 
