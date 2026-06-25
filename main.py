@@ -816,7 +816,7 @@ class NaiveTUI:
                 h.addstr(y, 2, f" {prefix} {label}: ", clr)
                 h.addstr(f"{display}", cp("input"))
             h.attron(cpf("dim"))
-            h.addstr(self.height - 4, 2, " ↑↓ navigate  Enter=edit  s=save  d=defaults  q=back")
+            h.addstr(self.height - 4, 2, " ↑↓/Tab navigate  Enter=edit  s=save  d=defaults  q=back")
             h.attroff(cpf("dim"))
             h.refresh()
             self._draw_status_bar()
@@ -825,6 +825,10 @@ class NaiveTUI:
             key = h.getch()
             if key in (curses.KEY_UP, ord('k')): idx = max(0, idx - 1); offset = min(offset, idx)
             elif key in (curses.KEY_DOWN, ord('j')): idx = min(len(fields) - 1, idx + 1); offset = max(0, idx - max_visible + 1)
+            elif key in (9,):  # Tab → next field
+                idx = min(len(fields) - 1, idx + 1); offset = max(0, idx - max_visible + 1)
+            elif key in (curses.KEY_BTAB, 353):  # Shift+Tab → prev field
+                idx = max(0, idx - 1); offset = min(offset, idx)
             elif key in (10, 13, ord(' ')):
                 k, lbl, val = fields[idx]
                 new_val = self._input_field(2, 2, lbl, val, width=self.width - len(lbl) - 12)
@@ -870,8 +874,8 @@ class NaiveTUI:
                     ("no-post-quantum", "No post-quantum", "False"),
                 ]
                 self._notify("Defaults restored")
-            elif key in (ord('q'), 27, 9):
-                self.current_menu = 1 if key == 9 else 0
+            elif key in (ord('q'), 27):
+                self.current_menu = 0
                 return self._route()
 
     def process_control(self):
@@ -1034,7 +1038,7 @@ class NaiveTUI:
                         h.addstr(out_y + j, 4, safe[:self.width - 6])
 
             h.attron(cpf("dim"))
-            h.addstr(self.height - 4, 2, " ↑↓  Enter=edit  d=deploy  s=save  q=back")
+            h.addstr(self.height - 4, 2, " ↑↓/Tab navigate  Enter=edit  d=deploy  s=save  q=back")
             h.attroff(cpf("dim"))
             h.refresh()
             self._draw_status_bar()
@@ -1082,8 +1086,11 @@ class NaiveTUI:
                 t = threading.Thread(target=deploy_thread, daemon=True)
                 t.start()
 
+            elif key in (9,):  # Tab → next field
+                idx = min(len(fields) - 1, idx + 1); offset = max(0, idx - max_visible + 1)
+            elif key in (curses.KEY_BTAB, 353):  # Shift+Tab → prev field
+                idx = max(0, idx - 1); offset = min(offset, idx)
             elif key in (ord('q'), 27): self.current_menu = 0; return self.dashboard()
-            elif key == 9: self.current_menu = (self.current_menu + 1) % len(self.menu_items); return self._route()
 
     # ── Routing ──
 
