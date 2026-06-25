@@ -775,11 +775,12 @@ class NaiveTUI:
         while True:
             self._draw_status_bar()
             self._draw_menu_bar()
+            curses.flushinp()
             key = h.getch()
-            if key in (curses.KEY_LEFT,): return self._nav_left()
-            if key in (curses.KEY_RIGHT,): return self._nav_right()
+            if key in (curses.KEY_LEFT, ord('h')): return self._nav_left()
+            if key in (curses.KEY_RIGHT, ord('l')): return self._nav_right()
             if key == 9: return self._nav_tab()
-            if key in (ord('q'), 27): return None
+            if key == ord('q'): return None
             if key == ord('1'):
                 r = self.ctl.start()
                 self._notify({"ok": "Started", "already_running": "Already running", "no_binary": "naive binary not found"}.get(r, r))
@@ -833,7 +834,7 @@ class NaiveTUI:
             h.refresh()
             self._draw_status_bar()
             self._draw_menu_bar()
-
+            curses.flushinp()
             key = h.getch()
             if key in (curses.KEY_UP, ord('k')): idx = max(0, idx - 1); offset = min(offset, idx)
             elif key in (curses.KEY_DOWN, ord('j')): idx = min(len(fields) - 1, idx + 1); offset = max(0, idx - max_visible + 1)
@@ -895,6 +896,8 @@ class NaiveTUI:
                     ("no-post-quantum", "No post-quantum", "False"),
                 ]
                 self._notify("Defaults restored")
+            elif key in (curses.KEY_LEFT, ord('h')): return self._nav_left()
+            elif key in (curses.KEY_RIGHT, ord('l')): return self._nav_right()
             elif key in (ord('q'), 27):
                 return "dashboard"
 
@@ -932,7 +935,7 @@ class NaiveTUI:
             h.refresh()
             self._draw_status_bar()
             self._draw_menu_bar()
-
+            curses.flushinp()
             key = h.getch()
             if key == ord('1'):
                 r = self.ctl.start()
@@ -945,8 +948,8 @@ class NaiveTUI:
                 self._notify({"ok": "Restarted", "no_binary": "naive binary not found", "already_running": "Already running"}.get(r, r))
             elif key == ord('4') and not binary_ok:
                 return "binary_download_screen"
-            elif key in (curses.KEY_LEFT,): return self._nav_left()
-            elif key in (curses.KEY_RIGHT,): return self._nav_right()
+            elif key in (curses.KEY_LEFT, ord('h')): return self._nav_left()
+            elif key in (curses.KEY_RIGHT, ord('l')): return self._nav_right()
             elif key in (ord('q'), 27): return self._nav_back()
             elif key == 9: return self._nav_tab()
 
@@ -993,7 +996,7 @@ class NaiveTUI:
             h.refresh()
             self._draw_status_bar()
             self._draw_menu_bar()
-
+            curses.flushinp()
             key = h.getch()
             if key == curses.KEY_UP:
                 follow = False
@@ -1014,8 +1017,8 @@ class NaiveTUI:
                 all_logs.clear()
                 self.log_pad_pos = 0
                 self._notify("Logs cleared")
-            elif key in (curses.KEY_LEFT,): return self._nav_left()
-            elif key in (curses.KEY_RIGHT,): return self._nav_right()
+            elif key in (curses.KEY_LEFT, ord('h')): return self._nav_left()
+            elif key in (curses.KEY_RIGHT, ord('l')): return self._nav_right()
             elif key in (ord('q'), 27): return self._nav_back()
             elif key == 9: return self._nav_tab()
 
@@ -1072,7 +1075,7 @@ class NaiveTUI:
             h.refresh()
             self._draw_status_bar()
             self._draw_menu_bar()
-
+            curses.flushinp()
             key = h.getch()
             if key == curses.KEY_UP:
                 idx = max(0, idx - 1)
@@ -1119,6 +1122,8 @@ class NaiveTUI:
                 t = threading.Thread(target=deploy_thread, daemon=True)
                 t.start()
 
+            elif key in (curses.KEY_LEFT, ord('h')): return self._nav_left()
+            elif key in (curses.KEY_RIGHT, ord('l')): return self._nav_right()
             elif key in (ord('q'), 27): return "dashboard"
 
     # ── Event loop ──
